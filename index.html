@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="看板">
+<title>私人頁面</title>
+<style>
+  :root{--bg:#edf0f2;--card:#fbfcfc;--ink:#1b2631;--sub:#5d6b78;--rule:#d5dbe0;--btn:#1b2631;--btnf:#fbfcfc;--bad:#b3590b}
+  @media (prefers-color-scheme:dark){:root{--bg:#0e1318;--card:#151b22;--ink:#e8edf1;--sub:#9aa6b2;--rule:#2a333c;--btn:#e8edf1;--btnf:#0e1318;--bad:#f0a04b}}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--ink);font:16px/1.5 "PingFang TC","Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;display:grid;place-items:center;padding:16px}
+  form{width:min(360px,100%);background:var(--card);border:1px solid var(--rule);border-radius:12px;padding:22px}
+  h1{font-size:19px;margin:0 0 4px}
+  p{margin:0 0 16px;color:var(--sub);font-size:14px}
+  label{display:block;font-size:14px;margin-bottom:6px}
+  input{width:100%;height:46px;font:inherit;padding:0 12px;border-radius:8px;border:1px solid var(--rule);background:var(--bg);color:var(--ink)}
+  button{width:100%;height:46px;margin-top:12px;font:inherit;font-weight:600;border:0;border-radius:8px;background:var(--btn);color:var(--btnf);cursor:pointer}
+  button:disabled{opacity:.6;cursor:default}
+  #msg{min-height:22px;margin:10px 0 0;color:var(--bad);font-size:14px}
+</style>
+</head>
+<body>
+<form id="f" hidden>
+  <h1>私人頁面</h1>
+  <p>請輸入密碼。這支裝置之後不用再輸入。</p>
+  <label for="pw">密碼</label>
+  <input id="pw" type="password" autocomplete="current-password" required>
+  <button id="go" type="submit">打開</button>
+  <div id="msg" role="alert"></div>
+</form>
+<script>
+(function(){
+  var SAVE='rbRemote.v1', f=document.getElementById('f'), pw=document.getElementById('pw'), go=document.getElementById('go'), msg=document.getElementById('msg');
+  var te=new TextEncoder(), td=new TextDecoder();
+  function unb64(s){ var b=atob(s), a=new Uint8Array(b.length); for(var i=0;i<b.length;i++) a[i]=b.charCodeAt(i); return a; }
+  function show(t){ f.hidden=false; msg.textContent=t||''; go.disabled=false; go.textContent='打開'; }
+  function forget(){ try{ localStorage.removeItem(SAVE); }catch(e){} }
+  async function openVault(p){
+    var r=await fetch('vault.enc?t='+Date.now(),{cache:'no-store'});
+    if(!r.ok) throw new Error('vault');
+    var v=await r.json();
+    var base=await crypto.subtle.importKey('raw',te.encode(p.normalize('NFKC')),'PBKDF2',false,['deriveKey']);
+    var key=await crypto.subtle.deriveKey({name:'PBKDF2',hash:'SHA-256',salt:unb64(v.salt),iterations:v.iter},base,{name:'AES-GCM',length:256},false,['decrypt']);
+    var out=await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(v.iv),additionalData:te.encode('vault')},key,unb64(v.ct));
+    return JSON.parse(td.decode(out));
+  }
+  async function openBoard(c){
+    var r=await fetch(c.api+'/repos/'+c.owner+'/'+c.repo+'/contents/board.enc?ref=data',{cache:'no-store',headers:{Authorization:'Bearer '+c.token,Accept:'application/vnd.github.raw+json','X-GitHub-Api-Version':'2022-11-28'}});
+    if(r.status===401||r.status===403){ var e=new Error('auth'); e.auth=true; throw e; }
+    if(!r.ok) throw new Error('board');
+    var b=new Uint8Array(await r.arrayBuffer());
+    var key=await crypto.subtle.importKey('raw',unb64(c.key),'AES-GCM',false,['decrypt']);
+    var plain;
+    try{ plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:b.slice(3,15),additionalData:te.encode('board')},key,b.slice(15)); }
+    catch(x){ var d=new Error('key'); d.auth=true; throw d; }
+    var html=await new Response(new Blob([plain]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
+    window.__REMOTE=c;
+    document.open(); document.write(html); document.close();
+  }
+  f.addEventListener('submit',async function(ev){
+    ev.preventDefault(); go.disabled=true; go.textContent='開啟中…'; msg.textContent='';
+    var c;
+    try{ c=await openVault(pw.value); }catch(e){ show(e.message==='vault'?'網頁還沒準備好，請稍後再試。':'密碼不對，請再試一次。'); return; }
+    try{ localStorage.setItem(SAVE,JSON.stringify(c)); }catch(e){}
+    try{ await openBoard(c); }catch(e){ show(e.auth?'連線鑰匙已失效，請在 Mac 重新設定手機看板。':'連不上資料，請確認網路後再試。'); }
+  });
+  (async function(){
+    var c=null; try{ c=JSON.parse(localStorage.getItem(SAVE)||'null'); }catch(e){}
+    if(!c){ show(); return; }
+    try{ await openBoard(c); }
+    catch(e){ if(e.auth){ forget(); show('請重新輸入密碼。'); } else show('連不上資料，請確認網路後輸入密碼再試。'); }
+  })();
+})();
+</script>
+</body>
+</html>
